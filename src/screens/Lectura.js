@@ -376,31 +376,8 @@ export default function Lectura({ navigation }) {
       setCompletada(true);
       await updateClienteEnCache(clienteActualizado);
 
-      // ¿Tiene correo?
-      const hasEmail = !!(clienteActualizado?.correo && clienteActualizado.correo !== "");
-
-      if (!hasEmail) {
-        // Auto-imprimir ZPL y avanzar
-        try {
-          await ensureBtReady();
-          const fields = buildZplFields({
-            cliente: clienteActualizado,
-            lugar,
-            completada: true, // ya quedó guardada
-            clienteUltimaLecturaAnterior,
-            clienteUltimaLectura: clienteActualizado?.ultima_lectura?.lectura ?? lectura,
-            lectura,
-            multa,
-          });
-          await printTicketZPL(fields); // usa la impresora guardada
-          setSnack({ visible: true, msg: "Guardado e impreso automáticamente." });
-        } catch (e) {
-          setSnack({ visible: true, msg: "Guardado, pero no se pudo imprimir: " + (e?.message || e) });
-        }
-      } else {
-        setSnack({ visible: true, msg: "Guardado correctamente." });
-      }
-
+      setSnack({ visible: true, msg: "Guardado correctamente." });
+      
       // Avanza automáticamente (si quieres, cambia a false para no filtrar solo pendientes)
       await irSiguiente(true);
 
