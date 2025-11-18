@@ -23,7 +23,6 @@ y generar recibos térmicos mediante impresoras Bluetooth ESC/POS.
 - React Navigation
 - AsyncStorage (si guardás datos localmente)
 - fetch nativo para consumir la API
-- react-native-thermal-pos-printer (si lo estás usando)
 
 ## Imagen (Lista de clientes):
 ![Lista de clientes](docs/clientes.png)
