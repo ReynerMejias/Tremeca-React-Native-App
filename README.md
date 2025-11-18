@@ -11,7 +11,6 @@ y generar recibos térmicos mediante impresoras Bluetooth ESC/POS.
 - Visualización del historial de consumo
 - Generación de recibos (según integración disponible)
 - Impresión térmica Bluetooth (ESC/POS)
-- Manejo básico offline (si no hay conexión en campo)
 - Navegación simple e intuitiva
 
 ## Imagen (Pantalla principal):  
