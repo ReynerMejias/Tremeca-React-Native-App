@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback , useRef } from "react";
-import { View, Image, ScrollView, TouchableOpacity , Modal, Text as RNText} from "react-native";
+import React, { useEffect, useState, useCallback, useRef } from "react";
+import { View, Image, ScrollView, TouchableOpacity, Modal, Text as RNText, PanResponder, Dimensions } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import {
   Button,
@@ -16,6 +16,7 @@ import {
   Banner,
   IconButton,
   Snackbar,
+  List,
 } from "react-native-paper";
 import {
   postLectura,
@@ -173,7 +174,6 @@ export default function Lectura({ navigation }) {
   const [image, setImage] = useState(null);
   const [multa, setMulta] = useState("");
   const [multaDetalles, setMultaDetalles] = useState("");
-  const [enabled, setEnabled] = useState(false);
   const [completada, setCompletada] = useState(completadaInicial);
   const [mostrarSolicitud, setMostrarSolicitud] = useState(true);
   const [solicitud, setSolicitud] = useState(null);
@@ -185,9 +185,62 @@ export default function Lectura({ navigation }) {
 
   const [showCapture, setShowCapture] = useState(false);
   const ticketRef = useRef(null);
-
-  // ⬇️ NUEVO: ancho dinámico para renderizar y capturar
   const [shotWidth, setShotWidth] = useState(576);
+
+  // --- LÓGICA DE GESTOS CON ACELERACIÓN ---
+  const lecturaRef = useRef(0);
+  const startValueRef = useRef(0);
+  // Estado para feedback visual de "Turbo"
+  const [isTurbo, setIsTurbo] = useState(false); 
+
+  useEffect(() => {
+    lecturaRef.current = parseInt(lectura || "0", 10) || 0;
+  }, [lectura]);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return Math.abs(gestureState.dx) > 10 && Math.abs(gestureState.dy) < 40;
+      },
+      onPanResponderGrant: () => {
+        startValueRef.current = lecturaRef.current;
+        setIsTurbo(false);
+      },
+      onPanResponderMove: (_, gestureState) => {
+        const dx = gestureState.dx;
+        const absDx = Math.abs(dx);
+        let change = 0;
+
+        // --- FÓRMULA DE ACELERACIÓN ---
+        // 1. Zona de Precisión (0 a 80px): Movimiento lineal lento (1 unidad cada 20px)
+        if (absDx < 80) {
+           change = Math.round(dx / 20);
+           setIsTurbo(false);
+        } 
+        // 2. Zona Turbo (> 80px): Movimiento Exponencial
+        else {
+           setIsTurbo(true);
+           const sign = Math.sign(dx);
+           // Restamos los primeros 80px para calcular la "distancia turbo"
+           const turboDist = absDx - 80; 
+           
+           // Fórmula exponencial: Eleva la distancia a la potencia 1.5 para saltos grandes
+           // Esto permite ir de 0 a 150 muy rápido si arrastras lejos
+           const turboBoost = Math.floor(Math.pow(turboDist, 1.5) / 10);
+           
+           // Base (4 unidades de la zona lenta) + Boost
+           change = sign * (4 + turboBoost);
+        }
+
+        const newValue = Math.max(0, startValueRef.current + change);
+        setLectura(String(newValue));
+      },
+      onPanResponderRelease: () => {
+        setIsTurbo(false);
+      },
+    })
+  ).current;
+  // ----------------------------------------
 
   const mesHoy = new Date().getMonth() + 1;
 
@@ -198,9 +251,19 @@ export default function Lectura({ navigation }) {
       ? `Comprobante #${cliente.ultima_lectura.fecha_lectura?.replace(/-/g, "")}${cliente.ultima_lectura.id} - ${lugar.codigo}`
       : "Comprobante sin lectura anterior";
 
-  const isCompletadaMes = (c) =>
-    c?.ultima_lectura?.fecha_lectura &&
-    parseInt(c.ultima_lectura.fecha_lectura.split("-")[1]) >= mesHoy;
+  const isCompletadaMes = (c) => {
+    if (!c?.ultima_lectura?.fecha_lectura) return false;
+    
+    const parts = c.ultima_lectura.fecha_lectura.split("-");
+    const yearLectura = parseInt(parts[0], 10);
+    const monthLectura = parseInt(parts[1], 10);
+    
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+
+    return yearLectura === currentYear && monthLectura === currentMonth;
+  };
 
   const updateClienteEnCache = async (updated) => {
     if (!cacheKey) return;
@@ -243,8 +306,8 @@ export default function Lectura({ navigation }) {
   );
 
   const getEffectiveWidthPx = useCallback(async () => {
-    const px = await getWidthPx();              // lee el ancho guardado (por defecto 576)
-    return Math.max(200, Math.floor(px / 8) * 8);
+    const px = await getWidthDots(); 
+    return Math.max(200, Math.floor((px || 576) / 8) * 8);
   }, []);
 
   useEffect(() => {
@@ -252,13 +315,11 @@ export default function Lectura({ navigation }) {
     let cancelled = false;
     (async () => {
       try {
-        // 1) Calcula el ancho real y renderiza a ese ancho
         const widthPx = await getEffectiveWidthPx();
         setShotWidth(widthPx);
-        await new Promise(r => setTimeout(r, 180)); // deja renderizar el modal al nuevo ancho
+        await new Promise(r => setTimeout(r, 180));
         if (cancelled) return;
 
-        // 2) Captura exactamente a widthPx
         const base64 = await ticketRef.current?.capture?.({
           format: "png",
           quality: 1,
@@ -269,9 +330,7 @@ export default function Lectura({ navigation }) {
         if (!base64 || base64.length < 5000) {
           setSnack({ visible: true, msg: "La captura salió vacía. Intenta de nuevo." });
         } else {
-          // 3) Envía con el MISMO ancho calculado (evita el “corte” a la derecha)
-          await printImageBase64Smart(base64, widthPx);
-          setSnack({ visible: true, msg: `Comprobante impreso a ${widthPx}px.` });
+           setSnack({ visible: true, msg: `Imagen capturada (${widthPx}px).` });
         }
       } catch (e) {
         setSnack({ visible: true, msg: "No se pudo imprimir: " + (e?.message || e) });
@@ -281,10 +340,6 @@ export default function Lectura({ navigation }) {
     })();
     return () => { cancelled = true; };
   }, [showCapture, getEffectiveWidthPx]);
-
-  useEffect(() => {
-    setEnabled(!!(lectura !== undefined && lectura !== ""));
-  }, [lectura, multa]);
 
   useEffect(() => {
     if (!cliente) return;
@@ -327,7 +382,6 @@ export default function Lectura({ navigation }) {
   };
 
   const handleSave = async () => {
-    setEnabled(false);
     const validarLectura = completada ? clienteUltimaLecturaAnterior : clienteUltimaLectura;
 
     if (parseInt(lectura) < validarLectura) {
@@ -362,7 +416,6 @@ export default function Lectura({ navigation }) {
       const multaSan = String(multa ?? "").trim();
       const obsSan = String(multaDetalles ?? "");
 
-      // Siempre enviar, aún si es "0" o vacío (permite limpiar/actualizar)
       data.append("moratorio", multaSan === "" ? "0" : multaSan);
       data.append("observacion", obsSan);
 
@@ -370,7 +423,6 @@ export default function Lectura({ navigation }) {
       if (!completada) await postLectura(data);
       else await patchLectura(cliente.ultima_lectura.id, data);
 
-      // Refresca el cliente desde servidor
       const clienteActualizado = await getCliente(cliente.id);
       setCliente(clienteActualizado);
       setCompletada(true);
@@ -378,7 +430,6 @@ export default function Lectura({ navigation }) {
 
       setSnack({ visible: true, msg: "Guardado correctamente." });
       
-      // Avanza automáticamente (si quieres, cambia a false para no filtrar solo pendientes)
       await irSiguiente(true);
 
     } catch (error) {
@@ -432,7 +483,6 @@ export default function Lectura({ navigation }) {
   const handlePrintZPL = async () => {
     try {
       await ensureBtReady();
-      // ancho guardado (no es obligatorio, printTicketZPL lo calcula de todas formas)
       await getWidthDots();
 
       const fechaStr = getFecha(cliente, completada, lugar);
@@ -463,7 +513,6 @@ export default function Lectura({ navigation }) {
         ? `#${cliente.ultima_lectura.fecha_lectura?.replace(/-/g, "")}${cliente.ultima_lectura.id}-${lugar?.codigo ?? ""}`
         : `#${new Date().toISOString().slice(0,10).replace(/-/g,"")}TEMP-${lugar?.codigo ?? ""}`;
 
-      // Campos que acepta makeZplTicket (ya setea ^CI28 para tildes):
       const fields = {
         title: "Comprobante de lectura",
         comp: `Comprobante ${compStr}`,
@@ -482,11 +531,10 @@ export default function Lectura({ navigation }) {
         multa: multaNum > 0 ? `CRC ${Math.round(multaNum).toLocaleString("es-CR")}` : "CRC 0",
         obs: obsStr,
         despedida: "Recuerde pagar a tiempo. ¡Gracias!",
-        // Opcional: ajusta tearOffset si deja papel de más (p.ej. -50)
         tearOffset: -50,
       };
 
-      await printTicketZPL(fields); // usa impresora guardada (sin pasar address)
+      await printTicketZPL(fields); 
       setSnack({ visible: true, msg: "Ticket ZPL enviado." });
     } catch (e) {
       setSnack({ visible: true, msg: "No se pudo imprimir: " + (e?.message || e) });
@@ -509,8 +557,8 @@ export default function Lectura({ navigation }) {
   const totalPagar = subtotal + multaUsar;
 
   return (
-    <View>
-      <ScrollView>
+    <View style={{ flex: 1 }}>
+      <ScrollView contentContainerStyle={{ flexGrow: 1 }}>
         <Portal>
           <Dialog visible={visible} onDismiss={() => setVisible(false)}>
             <Dialog.Icon icon={dialogIcon} color={colors.error} />
@@ -571,7 +619,7 @@ export default function Lectura({ navigation }) {
           </Banner>
         )}
 
-        <View style={{ marginBottom: 16, padding: 16, gap: 16 }}>
+        <View style={{ padding: 16, gap: 16, flex: 1 }}>
           {loading && <ActivityIndicator />}
 
           <Card style={{ backgroundColor: colors.surface }} mode="outlined">
@@ -588,7 +636,7 @@ export default function Lectura({ navigation }) {
             </Card.Content>
           </Card>
 
-          <Text style={{ fontSize: 16 }}>1. Lectura</Text>
+          <Text style={{ fontSize: 16 }}>1. Lectura Actual</Text>
           <View style={{ gap: 4 }}>
             <TextInput
               mode="outlined"
@@ -606,76 +654,94 @@ export default function Lectura({ navigation }) {
             </Text>
           </View>
 
-          <Text style={{ fontSize: 16 }}>2. Fotografía de la lectura (Opcional)</Text>
-          {image ? (
-            <TouchableOpacity
-              onPress={async () => {
-                const photoUri = await takePhoto();
-                if (photoUri) setImage(photoUri);
-              }}
-            >
-              <View style={{ position: "relative" }}>
-                <Image
-                  source={{ uri: image }}
-                  style={{
-                    width: "100%",
-                    height: 200,
-                    borderRadius: 8,
-                    borderColor: colors.accent,
-                    borderWidth: 1,
-                    opacity: 0.8,
-                  }}
-                />
-                <Text
-                  style={{
-                    position: "absolute",
-                    top: "40%",
-                    alignSelf: "center",
-                    color: colors.accent,
-                    backgroundColor: "rgba(0, 0, 0, 0.5)",
-                    padding: 10,
-                    borderRadius: 10,
+          <List.Accordion
+             title="2. Fotografía (Opcional)"
+             style={{ padding: 0, backgroundColor: 'transparent' }}
+             titleStyle={{ fontSize: 16, color: colors.text }}
+          >
+            <View style={{ paddingTop: 8 }}>
+              {image ? (
+                <TouchableOpacity
+                  onPress={async () => {
+                    const photoUri = await takePhoto();
+                    if (photoUri) setImage(photoUri);
                   }}
                 >
-                  Cambiar fotografía
-                </Text>
-              </View>
-            </TouchableOpacity>
-          ) : (
-            <Button
-              mode="outlined"
-              contentStyle={{ height: 200 }}
-              icon={"camera"}
-              textColor={colors.text}
-              style={{ width: "100%" }}
-              onPress={async () => {
-                const photoUri = await takePhoto();
-                if (photoUri) setImage(photoUri);
-              }}
-            >
-              Tomar fotografía
-            </Button>
-          )}
+                  <View style={{ position: "relative" }}>
+                    <Image
+                      source={{ uri: image }}
+                      style={{
+                        width: "100%",
+                        height: 200,
+                        borderRadius: 8,
+                        borderColor: colors.accent,
+                        borderWidth: 1,
+                        opacity: 0.8,
+                      }}
+                    />
+                    <Text
+                      style={{
+                        position: "absolute",
+                        top: "40%",
+                        alignSelf: "center",
+                        color: colors.accent,
+                        backgroundColor: "rgba(0, 0, 0, 0.5)",
+                        padding: 10,
+                        borderRadius: 10,
+                      }}
+                    >
+                      Cambiar fotografía
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              ) : (
+                <Button
+                  mode="outlined"
+                  contentStyle={{ height: 200 }}
+                  icon={"camera"}
+                  textColor={colors.text}
+                  style={{ width: "100%" }}
+                  onPress={async () => {
+                    const photoUri = await takePhoto();
+                    if (photoUri) setImage(photoUri);
+                  }}
+                >
+                  Tomar fotografía
+                </Button>
+              )}
+            </View>
+          </List.Accordion>
+          
+          <Divider />
 
-          <Text style={{ fontSize: 16 }}>3. Multa (opcional)</Text>
-          <TextInput
-            mode="outlined"
-            placeholder="Monto de la multa"
-            value={multa}
-            onChangeText={handleInputChangeMulta}
-            keyboardType="numeric"
-            inputMode="numeric"
-            maxLength={10}
-          />
-          <TextInput
-            mode="outlined"
-            placeholder="Detalles de la multa (opcional)"
-            value={multaDetalles}
-            onChangeText={setMultaDetalles}
-            multiline
-            numberOfLines={3}
-            style={{ marginTop: 8, height: 80 }}
-          />
+          <List.Accordion
+             title="3. Multa (Opcional)"
+             style={{ padding: 0, backgroundColor: 'transparent' }}
+             titleStyle={{ fontSize: 16, color: colors.text }}
+          >
+            <View style={{ paddingTop: 8, gap: 8 }}>
+              <TextInput
+                mode="outlined"
+                placeholder="Monto de la multa"
+                value={multa}
+                onChangeText={handleInputChangeMulta}
+                keyboardType="numeric"
+                inputMode="numeric"
+                maxLength={10}
+              />
+              <TextInput
+                mode="outlined"
+                placeholder="Detalles de la multa (opcional)"
+                value={multaDetalles}
+                onChangeText={setMultaDetalles}
+                multiline
+                numberOfLines={3}
+                style={{ height: 80 }}
+              />
+            </View>
+          </List.Accordion>
+          
+          <Divider style={{ marginBottom: 10 }}/>
 
           {cargandoSolicitud && (
             <ActivityIndicator animating style={{ alignSelf: "center" }} />
@@ -697,6 +763,8 @@ export default function Lectura({ navigation }) {
               )}
             </>
           )}
+
+          <View style={{ flex: 1 }} />
 
           {completada && (
             <View
@@ -721,12 +789,36 @@ export default function Lectura({ navigation }) {
               </Text>
               <Text style={{ fontSize: 13, marginTop: 4 }}>
                 💰 Total a pagar:{" "}
-                <Text style={{ fontWeight: "bold", color: colors.white }}>
+                <Text style={{ fontWeight: "bold", color: colors.primary }}>
                   {dineroCRC(totalPagar)}
                 </Text>
               </Text>
             </View>
           )}
+
+          {/* === ZONA DE CONTROL (THUMB ZONE ACELERADA) === */}
+          <View 
+            {...panResponder.panHandlers}
+            style={{ 
+              height: 120,
+              backgroundColor: isTurbo ? colors.secondaryContainer : (colors.elevation?.level2 || '#f0f0f0'), 
+              borderRadius: 16,
+              justifyContent: 'center',
+              alignItems: 'center',
+              borderWidth: isTurbo ? 2 : 1,
+              borderColor: isTurbo ? colors.primary : colors.outlineVariant,
+              marginBottom: 8
+            }}
+          >
+             <IconButton icon={isTurbo ? "run-fast" : "gesture-swipe-horizontal"} size={32} iconColor={isTurbo ? colors.primary : colors.outline} />
+             <Text style={{ color: isTurbo ? colors.primary : colors.secondary, fontWeight: 'bold' }}>
+               {isTurbo ? "¡TURBO ACTIVADO!" : "DESLIZA AQUÍ (SUAVE O RÁPIDO)"}
+             </Text>
+             <View style={{ flexDirection: 'row', width: '100%', justifyContent: 'space-between', paddingHorizontal: 20, position: 'absolute' }}>
+                 <IconButton icon="chevron-double-left" size={24} iconColor={colors.outline} />
+                 <IconButton icon="chevron-double-right" size={24} iconColor={colors.outline} />
+             </View>
+          </View>
 
           <View
             style={{
@@ -745,7 +837,6 @@ export default function Lectura({ navigation }) {
                 flex: 1,
               }}
               onPress={handleSave}
-              disabled={!enabled}
             >
               {!completada ? "Guardar" : "Editar lectura"}
             </Button>
@@ -753,7 +844,6 @@ export default function Lectura({ navigation }) {
         </View>
       </ScrollView>
 
-      {/* ⬇️ MODAL: ahora usa shotWidth en todo */}
       <Modal visible={showCapture} transparent animationType="none">
         <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.02)", alignItems: "center", justifyContent: "center" }}>
           <View style={{ backgroundColor: "#fff" }}>

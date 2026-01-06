@@ -56,9 +56,21 @@ export default function Clientes({ navigation }) {
     return `${d} d`;
   };
 
-  const isCompletadaMes = (cliente) =>
-    cliente?.ultima_lectura?.fecha_lectura &&
-    parseInt(cliente.ultima_lectura.fecha_lectura.split("-")[1]) >= mesHoy;
+  // 🔴 CORREGIDO: Ahora valida AÑO y MES para evitar falsos positivos con lecturas del año pasado
+  const isCompletadaMes = (cliente) => {
+    if (!cliente?.ultima_lectura?.fecha_lectura) return false;
+    
+    const parts = cliente.ultima_lectura.fecha_lectura.split("-");
+    const yearLectura = parseInt(parts[0], 10);
+    const monthLectura = parseInt(parts[1], 10);
+
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+
+    // Devuelve true solo si el año Y el mes coinciden exactamente
+    return yearLectura === currentYear && monthLectura === currentMonth;
+  };
 
   const aplicarFiltro = (lista, term) => {
     if (!term?.trim()) return lista;
